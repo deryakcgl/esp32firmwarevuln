@@ -1,0 +1,31 @@
+# Core dependencies
+numpy>=1.21.0
+pandas>=1.3.0
+scikit-learn>=1.0.0
+pyyaml>=5.4.0
+
+# Machine learning (optional - for real model training)
+xgboost>=1.5.0
+
+# Deep learning (optional - for CNN power analysis)
+tensorflow>=2.8.0; platform_machine != "arm64"
+# tensorflow-macos>=2.8.0; platform_machine == "arm64"  # Uncomment for Apple Silicon
+
+# LLM API clients (optional - for real LLM integration)
+# openai>=1.0.0
+# anthropic>=0.3.0
+
+# Hardware interfaces (optional - for real hardware validation)
+# adafruit-circuitpython-ina219>=2.4.0
+# pyvisa>=1.11.0
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=3.0.0
+
+# Development
+black>=22.0.0
+flake8>=4.0.0
+mypy>=0.950
+
+

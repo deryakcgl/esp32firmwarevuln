@@ -1,0 +1,78 @@
+# ESP32 FirmGuard Configuration
+
+paths:
+  analysis_output: "./output/analysis"
+  model_output: "./output/models"
+  dataset_output: "./output/datasets"
+  firmware_samples: "./firmware_samples"
+
+# Firmware extraction tools
+extraction:
+  binwalk_path: "binwalk"  # ✅ Kurulu: /opt/homebrew/bin/binwalk
+  emba_path: "/tmp/emba/emba"  # Manuel kurulum gerekli (sudo ./installer.sh -d)
+  ghidra_path: "/opt/homebrew/Cellar/ghidra/11.4.2/libexec/support/analyzeHeadless"  # ✅ Kurulu: Homebrew
+  # Linux: "/usr/local/ghidra/support/analyzeHeadless"
+  # Windows: "C:\\Program Files\\Ghidra\\support\\analyzeHeadless.bat"
+
+# Feature extraction settings
+features:
+  structural:
+    enabled: true
+    include_entropy: true
+    include_cfg_metrics: true
+  peripheral:
+    enabled: true
+    io_patterns: ["uart", "spi", "i2c", "gpio", "wifi", "bluetooth"]
+  embeddings:
+    enabled: true
+    model_name: "gpt-4"  # or "claude", "llama", etc.
+
+# LLM settings for CWE labeling
+llm:
+  provider: "ollama"  # "openai", "anthropic", or "ollama" (free, local)
+  model: "llama3"  # For Ollama: "llama3", "llama3.1", "mistral", etc.
+  ollama_url: "http://localhost:11434"  # Ollama server URL
+  api_key: null  # Set via environment variable (not needed for Ollama)
+  temperature: 0.3
+  max_tokens: 500
+  cwe_categories:
+    - "CWE-79"  # XSS
+    - "CWE-89"  # SQL Injection
+    - "CWE-120" # Buffer Overflow
+    - "CWE-190" # Integer Overflow
+    - "CWE-787" # Out-of-bounds Write
+    - "CWE-416" # Use After Free
+
+# Model training settings
+model:
+  type: "xgboost"  # or "random_forest", "neural_network"
+  n_estimators: 100
+  max_depth: 6
+  learning_rate: 0.1
+  threshold: 0.7  # Risk threshold for high-risk functions
+
+# Validation settings
+validation:
+  fuzzing:
+    enabled: true
+    qemu_path: "/opt/homebrew/bin/qemu-system-xtensa"  # macOS Homebrew path
+    afl_path: "/usr/local/bin/afl-fuzz"  # ✅ Kurulu: afl-fuzz++4.35a
+    timeout: 3600  # seconds
+    max_crashes: 100
+  hardware:
+    enabled: true
+    ina219_address: 0x40
+    oscilloscope_enabled: false
+    power_trace_samples: 10000
+    cnn_model_path: "./models/power_cnn.h5"
+
+# Metrics settings
+metrics:
+  compute_vcr: true
+  compute_sri: true
+  sri_weights:
+    precision: 0.25
+    recall: 0.25
+    f1: 0.30
+    vcr: 0.20
+
