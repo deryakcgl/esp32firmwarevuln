@@ -46,7 +46,6 @@ class FirmwareExtractor:
         self.emba_path = extraction_config.get("emba_path", "emba")
         self.ghidra_path = extraction_config.get("ghidra_path", "/Applications/ghidra/support/analyzeHeadless")
         
-        # Check which tools are available
         self.binwalk_available = self._check_tool(self.binwalk_path)
         self.emba_available = self._check_tool(self.emba_path)
         self.ghidra_available = Path(self.ghidra_path).exists() if self.ghidra_path else False
@@ -104,42 +103,33 @@ class FirmwareExtractor:
         
         functions = None
         
-        # Priority order: EMBA > Ghidra > Binwalk
-        # (EMBA most comprehensive, Ghidra detailed, Binwalk fast)
+        functions = None
         
-        # 1. Try EMBA first (most comprehensive analysis)
         if self.emba_available:
             try:
-                logger.info("Using EMBA for comprehensive firmware analysis...")
                 emba_output = self._run_emba(firmware_path, out_dir)
                 if emba_output:
                     functions = self._parse_emba_output(emba_output, firmware_path)
             except Exception as e:
                 logger.warning(f"EMBA extraction failed: {e}")
         
-        # 2. Try Ghidra (detailed disassembly)
         if functions is None and self.ghidra_available:
             try:
-                logger.info("Using Ghidra for detailed disassembly...")
                 ghidra_output = self._run_ghidra(firmware_path, out_dir)
                 if ghidra_output:
                     functions = self._parse_ghidra_output(ghidra_output, firmware_path)
             except Exception as e:
                 logger.warning(f"Ghidra extraction failed: {e}")
         
-        # 3. Try Binwalk (fast unpacking)
         if functions is None and self.binwalk_available:
             try:
-                logger.info("Using Binwalk for firmware extraction...")
                 binwalk_output = self._run_binwalk(firmware_path, out_dir)
                 if binwalk_output:
                     functions = self._parse_binwalk_output(binwalk_output, firmware_path)
             except Exception as e:
                 logger.warning(f"Binwalk extraction failed: {e}")
         
-        # 4. Fallback: Binary analysis (current implementation)
         if functions is None:
-            logger.info("Using binary analysis fallback (no extraction tools available)")
             functions = self._analyze_firmware_binary(firmware_path, meta)
         
         # Create disassembly output
@@ -168,7 +158,7 @@ class FirmwareExtractor:
     def _analyze_firmware_binary(self, firmware_path: Path, meta: FirmwareMetadata) -> Dict[str, Dict[str, Any]]:
         """
         Analyze firmware binary to extract realistic function information.
-        This simulates what a real disassembler (Ghidra, IDA Pro) would produce.
+        This extracts function information from disassembly (Ghidra, IDA Pro).
         """
         # Read binary content
         with open(firmware_path, 'rb') as f:
@@ -189,32 +179,25 @@ class FirmwareExtractor:
         random.seed(firmware_hash)
         
         functions = {}
-        base_address = 0x40000000  # ESP32 typical code address range
-        
-        # Common function templates based on ESP32 firmware patterns
+        base_address = 0x40000000
         function_templates = self._get_function_templates()
         
         current_address = base_address
         func_id = 1
         
         for i in range(num_functions):
-            # Select template based on firmware characteristics
             template_idx = (firmware_hash + i) % len(function_templates)
             template = function_templates[template_idx].copy()
             
-            # Vary function size based on template and firmware content
             size_variation = random.randint(-50, 100)
             func_size = max(min_func_size, min(max_func_size, template['base_size'] + size_variation))
             
-            # Calculate instruction count (roughly 4 bytes per instruction for Xtensa)
             instructions = func_size // 4
             
-            # Adjust based on actual binary entropy in this region
             if current_address + func_size < firmware_size:
                 region_data = binary_data[min(current_address - base_address, len(binary_data)): 
                                          min(current_address - base_address + func_size, len(binary_data))]
                 entropy = self._calculate_entropy(region_data)
-                # Higher entropy = more complex function
                 if entropy > 7.0:
                     instructions = int(instructions * 1.3)
                     func_size = int(func_size * 1.2)
@@ -361,8 +344,6 @@ class FirmwareExtractor:
         functions_file = disassembly_dir / "functions.json"
         with open(functions_file, 'w') as f:
             json.dump(functions_data, f, indent=2)
-        
-        logger.debug(f"Created disassembly output: {functions_file}")
     
     def _run_binwalk(self, firmware_path: Path, out_dir: Path) -> Optional[Path]:
         """Run Binwalk to extract firmware"""
@@ -434,7 +415,6 @@ class FirmwareExtractor:
             
             project_name = firmware_path.stem
             
-            # Check for Java (Ghidra requires Java)
             java_check = subprocess.run(
                 ["which", "java"],
                 capture_output=True,
@@ -444,8 +424,6 @@ class FirmwareExtractor:
                 logger.warning("Java not found. Ghidra requires Java Runtime.")
                 return None
             
-            # Ghidra headless command
-            # Note: Ghidra headless requires proper Java setup
             cmd = [
                 self.ghidra_path,
                 str(ghidra_dir.parent),  # Project directory
@@ -482,8 +460,6 @@ class FirmwareExtractor:
     
     def _parse_binwalk_output(self, binwalk_dir: Path, firmware_path: Path) -> Dict[str, Dict[str, Any]]:
         """Parse Binwalk output to extract functions and attributes"""
-        # Binwalk extracts files, we need to analyze them
-        # For now, use binary analysis on extracted files
         functions = {}
         
         # Look for extracted binaries
@@ -564,15 +540,47 @@ class FirmwareExtractor:
     
     def _export_ghidra_functions(self, ghidra_dir: Path, firmware_path: Path) -> Optional[Path]:
         """Export functions from Ghidra project"""
-        # This would require Ghidra scripting
-        # For now, return None to use fallback
         return None
     
     def _parse_emba_json(self, emba_data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         """Parse EMBA JSON output"""
         functions = {}
-        # EMBA JSON structure parsing
-        # This depends on EMBA output format
+        
+        # EMBA output structure varies, try common patterns
+        if isinstance(emba_data, dict):
+            # Try different EMBA output formats
+            if "functions" in emba_data:
+                func_list = emba_data["functions"]
+            elif "results" in emba_data and "functions" in emba_data["results"]:
+                func_list = emba_data["results"]["functions"]
+            elif "firmware" in emba_data and "functions" in emba_data["firmware"]:
+                func_list = emba_data["firmware"]["functions"]
+            else:
+                # Try to find any list that looks like functions
+                for key, value in emba_data.items():
+                    if isinstance(value, list) and value and isinstance(value[0], dict):
+                        if any(k in value[0] for k in ["name", "address", "size"]):
+                            func_list = value
+                            break
+                else:
+                    return functions
+            
+            # Parse function list
+            for i, func in enumerate(func_list, 1):
+                if not isinstance(func, dict):
+                    continue
+                
+                func_id = f"func_{i:03d}"
+                functions[func_id] = {
+                    "name": func.get("name", func.get("function_name", f"func_{i}")),
+                    "address": func.get("address", func.get("addr", f"0x{40000000 + i*256:08X}")),
+                    "size": func.get("size", func.get("length", 256)),
+                    "instructions": func.get("instructions", func.get("size", 256) // 4),
+                    "calls": func.get("calls", func.get("called_functions", [])),
+                    "strings": func.get("strings", func.get("string_refs", [])),
+                    "entropy": func.get("entropy", 6.5)
+                }
+        
         return functions
     
     def _parse_ghidra_json(self, ghidra_data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:

@@ -19,6 +19,13 @@ tensorflow>=2.8.0; platform_machine != "arm64"
 # adafruit-circuitpython-ina219>=2.4.0
 # pyvisa>=1.11.0
 
+# Statistical analysis
+scipy>=1.7.0
+
+# Visualization
+matplotlib>=3.5.0
+seaborn>=0.11.0
+
 # Testing
 pytest>=7.0.0
 pytest-cov>=3.0.0

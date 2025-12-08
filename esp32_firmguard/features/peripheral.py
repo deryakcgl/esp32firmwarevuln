@@ -50,15 +50,12 @@ class PeripheralFeatureExtractor:
         
         features = {"func_id": func_id}
         
-        # Check for peripheral-related patterns in function name
         for pattern in self.io_patterns:
             features[f"name_contains_{pattern}"] = 1 if pattern in func_name else 0
         
-        # Check for peripheral-related strings
         for pattern in self.io_patterns:
             features[f"string_contains_{pattern}"] = 1 if any(pattern in s for s in strings) else 0
         
-        # Check for peripheral-related function calls
         peripheral_calls = {
             "uart": ["uart_read", "uart_write", "uart_init", "uart_send", "uart_recv"],
             "spi": ["spi_transfer", "spi_init", "spi_write", "spi_read"],

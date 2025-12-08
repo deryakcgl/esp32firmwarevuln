@@ -31,12 +31,34 @@ class CWELabeler:
         else:
             self.api_key = self.llm_config.get("api_key")
         
-        # Mock mode if no API key (except Ollama which doesn't need one)
-        self.mock_mode = (self.api_key is None and self.provider != "ollama")
-        if self.mock_mode:
-            logger.warning(f"No API key found for {self.provider}. Using advanced pattern-based labeling.")
+        # Pattern-based labeling as fallback when LLM unavailable
+        if self.provider == "pattern":
+            self.pattern_mode = True
         elif self.provider == "ollama":
-            logger.info(f"Using Ollama with model: {self.model} at {self.ollama_url}")
+            # Check if Ollama is available
+            try:
+                import requests
+                response = requests.get(f"{self.ollama_url}/api/tags", timeout=2)
+                response.raise_for_status()
+                self.pattern_mode = False
+                logger.info(f"Using Ollama with model: {self.model} at {self.ollama_url}")
+            except:
+                self.pattern_mode = True
+                logger.warning("Ollama not available. Using pattern-based labeling.")
+        elif self.provider == "openai":
+            self.pattern_mode = (self.api_key is None)
+            if not self.pattern_mode:
+                logger.info(f"Using OpenAI with model: {self.model}")
+        elif self.provider == "anthropic":
+            self.pattern_mode = (self.api_key is None)
+            if not self.pattern_mode:
+                logger.info(f"Using Anthropic with model: {self.model}")
+        else:
+            self.pattern_mode = True
+            logger.warning(f"Unknown provider '{self.provider}'. Using pattern-based labeling.")
+        
+        if self.pattern_mode:
+            logger.info("Using pattern-based CWE labeling (fast mode).")
     
     def label(self, firmware_obj) -> Dict[str, List[str]]:
         """
@@ -64,14 +86,12 @@ class CWELabeler:
     
     def _label_function(self, func_id: str, func_info: Dict[str, Any]) -> List[str]:
         """Label a single function with CWE categories"""
-        if not self.mock_mode:
-            # Try real LLM API first
+        if not self.pattern_mode:
             try:
                 return self._label_with_llm(func_id, func_info)
             except Exception as e:
-                logger.warning(f"LLM API call failed for {func_id}: {e}. Falling back to pattern-based labeling.")
+                logger.warning(f"LLM API call failed for {func_id}: {e}. Using pattern-based labeling.")
         
-        # Use advanced pattern-based labeling (research-quality)
         return self._advanced_pattern_labeling(func_id, func_info)
     
     def _label_with_llm(self, func_id: str, func_info: Dict[str, Any]) -> List[str]:
@@ -111,10 +131,7 @@ class CWELabeler:
         return []
     
     def _advanced_pattern_labeling(self, func_id: str, func_info: Dict[str, Any]) -> List[str]:
-        """
-        Advanced pattern-based CWE labeling using comprehensive vulnerability patterns.
-        Research-quality heuristics based on real-world vulnerability patterns.
-        """
+        """Pattern-based CWE labeling using vulnerability pattern heuristics"""
         func_name = func_info.get("name", "").lower()
         calls = [c.lower() for c in func_info.get("calls", [])]
         strings = [s.lower() for s in func_info.get("strings", [])]
@@ -135,7 +152,7 @@ class CWELabeler:
             if any(kw in func_name for kw in buffer_overflow_indicators["context_keywords"]):
                 cwe_labels.append("CWE-120")
                 vulnerability_score += 0.8
-            elif "memcpy" in calls and size > 256:  # Large memcpy without bounds check
+            elif "memcpy" in calls and size > 256:
                 cwe_labels.append("CWE-120")
                 vulnerability_score += 0.6
         
@@ -293,7 +310,7 @@ class CWELabeler:
                         },
                         "stream": False  # Non-streaming mode
                     },
-                    timeout=120
+                    timeout=10  # Reduced timeout for faster failure
                 )
                 response.raise_for_status()
                 result = response.json()

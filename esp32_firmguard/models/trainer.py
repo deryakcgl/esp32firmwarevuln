@@ -54,6 +54,14 @@ class ModelTrainer:
         """
         logger.info(f"Training {self.model_type} model on {len(feature_matrix)} samples")
         
+        # Remove CWE features from training (to force model to learn from other features)
+        cwe_cols = [col for col in feature_matrix.columns 
+                    if col.startswith('CWE-') or col in ['has_cwe', 'num_cwe_labels'] 
+                    or col.startswith('cwe_')]
+        if cwe_cols:
+            logger.info(f"Removing {len(cwe_cols)} CWE features from training: {cwe_cols[:5]}...")
+            feature_matrix = feature_matrix.drop(columns=cwe_cols, errors='ignore')
+        
         # Split data
         n_train = int(len(feature_matrix) * (1 - validation_split))
         train_features = feature_matrix.iloc[:n_train]
@@ -61,7 +69,7 @@ class ModelTrainer:
         val_features = feature_matrix.iloc[n_train:]
         val_labels = labels.iloc[n_train:]
         
-        # Train model - prefer XGBoost, fallback to sklearn, then mock
+        # Train model - prefer XGBoost, fallback to sklearn
         if self.model_type == "xgboost" and XGBOOST_AVAILABLE:
             self.model = self._train_xgboost(train_features, train_labels, val_features, val_labels)
         elif self.model_type in ["random_forest", "rf"] and SKLEARN_AVAILABLE:
@@ -104,19 +112,50 @@ class ModelTrainer:
         val_labels: pd.Series
     ) -> xgb.XGBClassifier:
         """Train XGBoost model"""
+        # Calculate class weights for imbalanced dataset
+        n_positive = (train_labels == 1).sum()
+        n_negative = (train_labels == 0).sum()
+        scale_pos_weight = n_negative / n_positive if n_positive > 0 else 1.0
+        
+        logger.info(f"Class distribution: {n_positive} positive, {n_negative} negative")
+        logger.info(f"Using scale_pos_weight: {scale_pos_weight:.3f}")
+        
+        # Get scale_pos_weight from config or calculate
+        config_scale = self.model_config.get("scale_pos_weight", "auto")
+        if config_scale == "auto" or config_scale is None:
+            final_scale = scale_pos_weight
+        else:
+            final_scale = float(config_scale)
+        
         params = {
-            "n_estimators": self.model_config.get("n_estimators", 100),
-            "max_depth": self.model_config.get("max_depth", 6),
-            "learning_rate": self.model_config.get("learning_rate", 0.1),
+            "n_estimators": self.model_config.get("n_estimators", 200),
+            "max_depth": self.model_config.get("max_depth", 8),
+            "learning_rate": self.model_config.get("learning_rate", 0.05),
+            "scale_pos_weight": final_scale,
+            "subsample": self.model_config.get("subsample", 0.8),
+            "colsample_bytree": self.model_config.get("colsample_bytree", 0.8),
+            "min_child_weight": self.model_config.get("min_child_weight", 1),
+            "gamma": self.model_config.get("gamma", 0.1),
+            "reg_alpha": self.model_config.get("reg_alpha", 0.1),
+            "reg_lambda": self.model_config.get("reg_lambda", 1.0),
             "objective": "binary:logistic",
             "eval_metric": "logloss",
             "random_state": 42
         }
         
+        # Cost-sensitive learning: False negatives are more expensive
+        # Vulnerable (1) samples get higher weight to reduce FN
+        sample_weights = np.ones(len(train_labels))
+        fn_cost_multiplier = self.model_config.get("fn_cost_multiplier", 5.0)  # FN 5x more expensive
+        sample_weights[train_labels == 1] = fn_cost_multiplier
+        
+        logger.info(f"Using cost-sensitive learning: FN cost multiplier = {fn_cost_multiplier}")
+        
         model = xgb.XGBClassifier(**params)
         model.fit(
             train_features,
             train_labels,
+            sample_weight=sample_weights,  # Cost-sensitive learning
             eval_set=[(val_features, val_labels)],
             verbose=False
         )
@@ -202,7 +241,6 @@ class ModelTrainer:
         model_path = self.model_output_dir / model_name
         
         if isinstance(self.model, dict):
-            # Save mock model as pickle
             with open(model_path, 'wb') as f:
                 pickle.dump(self.model, f)
         else:

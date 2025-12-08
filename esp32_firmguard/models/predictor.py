@@ -36,18 +36,38 @@ class VulnerabilityPredictor:
         self.model_loaded = False
     
     def load_model(self, model_path: Optional[Path] = None) -> None:
-        """Load trained model"""
+        """Load trained model (supports XGBoost, ensemble, or pickle)"""
         if model_path is None:
             model_output_dir = Path(self.config.get("paths", {}).get("model_output", "./output/models"))
-            model_path = model_output_dir / "vulnerability_model.pkl"
+            # Try ensemble model first, then regular model
+            ensemble_path = model_output_dir / "ensemble_model.pkl"
+            if ensemble_path.exists():
+                model_path = ensemble_path
+            else:
+                model_path = model_output_dir / "vulnerability_model.pkl"
         
         if not model_path.exists():
-            logger.warning(f"Model not found at {model_path}. Using mock predictions.")
+            logger.warning(f"Model not found at {model_path}. Using rule-based predictions.")
             self.model = None
             self.model_loaded = False
             return
         
         try:
+            # Try loading as pickle first (for ensemble models)
+            import pickle
+            try:
+                with open(model_path, 'rb') as f:
+                    loaded = pickle.load(f)
+                    # Check if it's an ensemble model (has predict_proba method)
+                    if hasattr(loaded, 'predict_proba'):
+                        self.model = loaded
+                        self.model_loaded = True
+                        logger.info(f"Loaded ensemble model from {model_path}")
+                        return
+            except:
+                pass
+            
+            # Try XGBoost model
             if XGBOOST_AVAILABLE:
                 try:
                     self.model = xgb.XGBClassifier()
@@ -58,8 +78,7 @@ class VulnerabilityPredictor:
                 except:
                     pass
             
-            # Try loading as pickle
-            import pickle
+            # Try loading as pickle (fallback)
             with open(model_path, 'rb') as f:
                 self.model = pickle.load(f)
                 self.model_loaded = isinstance(self.model, dict) or hasattr(self.model, 'predict_proba')
@@ -87,14 +106,38 @@ class VulnerabilityPredictor:
         if not self.model_loaded:
             self.load_model()
         
-        # Get predictions
+        # Align feature matrix with model's expected features
+        if self.model_loaded and self.model is not None and hasattr(self.model, 'feature_names_in_'):
+            expected_features = list(self.model.feature_names_in_)
+            # Add missing features (fill with 0)
+            for feat in expected_features:
+                if feat not in feature_matrix.columns:
+                    feature_matrix[feat] = 0
+            # Remove extra features
+            feature_matrix = feature_matrix[expected_features]
+        
+        # Remove CWE features before prediction (model was trained without them)
+        cwe_cols = [col for col in feature_matrix.columns 
+                    if col.startswith('CWE-') or col in ['has_cwe', 'num_cwe_labels'] 
+                    or col.startswith('cwe_')]
+        feature_matrix_no_cwe = feature_matrix.drop(columns=cwe_cols, errors='ignore')
+        
+        # Get predictions from model (without CWE features)
         if self.model_loaded and self.model is not None:
             if hasattr(self.model, 'predict_proba'):
-                probabilities = self.model.predict_proba(feature_matrix)[:, 1]
+                probabilities = self.model.predict_proba(feature_matrix_no_cwe)[:, 1]
             else:
-                probabilities = self._rule_based_predict_proba(feature_matrix)
+                probabilities = self._rule_based_predict_proba(feature_matrix_no_cwe)
         else:
-            probabilities = self._rule_based_predict_proba(feature_matrix)
+            probabilities = self._rule_based_predict_proba(feature_matrix_no_cwe)
+        
+        # Post-processing: Boost score if function has CWE labels
+        # This allows CWE to influence predictions without dominating training
+        cwe_boost_factor = self.config.get("model", {}).get("cwe_boost_factor", 0.3)
+        for i, func_id in enumerate(feature_matrix.index):
+            if cwe_labels and func_id in cwe_labels and len(cwe_labels[func_id]) > 0:
+                # Boost probability if CWE exists, but cap at reasonable level
+                probabilities[i] = min(probabilities[i] + cwe_boost_factor, 0.95)
         
         # Create predictions
         predictions = []
@@ -137,7 +180,6 @@ class VulnerabilityPredictor:
                     feat_normalized = feat_values
                 probabilities += feat_normalized * weight
         
-        # Check for CWE labels (strong indicator)
         cwe_cols = [col for col in feature_matrix.columns if col.startswith('CWE-')]
         if cwe_cols:
             cwe_score = feature_matrix[cwe_cols].sum(axis=1).values

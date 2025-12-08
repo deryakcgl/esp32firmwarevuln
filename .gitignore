@@ -41,7 +41,7 @@ htmlcov/
 .tox/
 .hypothesis/
 
-# Output directories
+# Output directories (exclude all output files)
 output/
 *.log
 
@@ -52,7 +52,9 @@ output/
 
 # Dataset files
 *.csv
-datasets/
+
+# Firmware samples (too large for git - 3.7GB+)
+firmware_samples/
 
 # OS
 .DS_Store
@@ -64,5 +66,3 @@ Thumbs.db
 # Environment variables
 .env
 .env.local
-
-

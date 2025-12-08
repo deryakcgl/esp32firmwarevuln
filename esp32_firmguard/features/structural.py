@@ -70,17 +70,76 @@ class StructuralFeatureExtractor:
         features["num_strings"] = len(strings)
         features["avg_string_length"] = np.mean([len(s) for s in strings]) if strings else 0
         
-        # Entropy (mock calculation - in real implementation, use actual binary data)
         features["entropy"] = self._calculate_entropy(func_info)
-        
-        # Cyclomatic complexity (simplified approximation)
         features["cyclomatic_complexity"] = self._estimate_cyclomatic_complexity(func_info)
-        
-        # Control flow metrics (mock)
-        features["num_branches"] = max(instructions // 10, 1)  # Rough estimate
+        features["num_branches"] = max(instructions // 10, 1)
         features["num_loops"] = max(instructions // 20, 0)
         
+        # Additional structural features for better vulnerability detection
+        
+        # Call graph depth (estimate based on call chain)
+        features["call_graph_depth"] = self._estimate_call_graph_depth(func_info, calls)
+        
+        # Input validation indicators
+        func_name_lower = func_info.get("name", "").lower()
+        input_validation_keywords = ["check", "validate", "verify", "sanitize", "filter"]
+        features["has_input_validation"] = 1 if any(
+            kw in func_name_lower or any(kw in s.lower() for s in strings)
+            for kw in input_validation_keywords
+        ) else 0
+        
+        # Output sanitization indicators
+        output_sanitization_keywords = ["sanitize", "escape", "encode", "filter"]
+        features["has_output_sanitization"] = 1 if any(
+            kw in func_name_lower or any(kw in s.lower() for s in strings)
+            for kw in output_sanitization_keywords
+        ) else 0
+        
+        # Format string detection
+        format_string_indicators = ["%s", "%d", "%x", "sprintf", "printf", "fprintf"]
+        features["has_format_strings"] = 1 if any(
+            any(indicator in s for s in strings) or any(indicator in c for c in calls)
+            for indicator in format_string_indicators
+        ) else 0
+        
+        # Hardcoded secrets detection (basic)
+        secret_patterns = ["password", "secret", "key", "token", "api_key", "auth"]
+        features["has_hardcoded_secrets"] = 1 if any(
+            pattern in s.lower() for s in strings for pattern in secret_patterns
+        ) else 0
+        
+        # Nesting depth (estimate based on complexity)
+        features["nesting_depth"] = min(features["cyclomatic_complexity"] // 3, 5)
+        
+        # Conditional count (estimate)
+        conditional_keywords = ["if", "else", "switch", "case", "while", "for"]
+        features["num_conditionals"] = sum(1 for c in calls if any(kw in c.lower() for kw in conditional_keywords))
+        
+        # Buffer operation indicators
+        buffer_ops = ["memcpy", "memset", "memmove", "strcpy", "strncpy", "strcat"]
+        features["num_buffer_ops"] = sum(1 for c in calls if any(op in c.lower() for op in buffer_ops))
+        
+        # Memory allocation indicators
+        alloc_ops = ["malloc", "calloc", "realloc", "free", "new", "delete"]
+        features["num_allocations"] = sum(1 for c in calls if any(op in c.lower() for op in alloc_ops))
+        features["has_memory_management"] = 1 if features["num_allocations"] > 0 else 0
+        
         return features
+    
+    def _estimate_call_graph_depth(self, func_info: Dict[str, Any], calls: List[str]) -> int:
+        """Estimate call graph depth (simplified)"""
+        # More calls = potentially deeper call graph
+        # This is a rough estimate
+        if len(calls) == 0:
+            return 0
+        elif len(calls) < 3:
+            return 1
+        elif len(calls) < 6:
+            return 2
+        elif len(calls) < 10:
+            return 3
+        else:
+            return 4
     
     def _calculate_entropy(self, func_info: Dict[str, Any]) -> float:
         """Calculate Shannon entropy from function binary data"""

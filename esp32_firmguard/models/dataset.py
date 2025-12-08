@@ -57,6 +57,42 @@ class DatasetBuilder:
         if not cwe_features.empty:
             feature_matrix = feature_matrix.join(cwe_features, how='left')
         
+        # Feature Interaction: CWE + Other Features
+        # This helps model learn patterns beyond just CWE labels
+        if 'has_cwe' in feature_matrix.columns:
+            # CWE + entropy interaction (vulnerable functions with high entropy)
+            if 'entropy' in feature_matrix.columns:
+                feature_matrix['cwe_entropy'] = feature_matrix['has_cwe'] * feature_matrix['entropy']
+            
+            # CWE + dangerous calls interaction (CWE + dangerous function calls)
+            if 'num_dangerous_calls' in feature_matrix.columns:
+                feature_matrix['cwe_dangerous'] = feature_matrix['has_cwe'] * feature_matrix['num_dangerous_calls']
+            
+            # CWE + complexity interaction (CWE + cyclomatic complexity)
+            if 'cyclomatic_complexity' in feature_matrix.columns:
+                feature_matrix['cwe_complexity'] = feature_matrix['has_cwe'] * feature_matrix['cyclomatic_complexity']
+            
+            # CWE + size interaction (CWE + function size)
+            if 'function_size' in feature_matrix.columns:
+                feature_matrix['cwe_size'] = feature_matrix['has_cwe'] * feature_matrix['function_size']
+            
+            # CWE + instruction count interaction
+            if 'instruction_count' in feature_matrix.columns:
+                feature_matrix['cwe_instructions'] = feature_matrix['has_cwe'] * feature_matrix['instruction_count']
+            
+            # CWE + call count interaction
+            if 'num_calls' in feature_matrix.columns:
+                feature_matrix['cwe_calls'] = feature_matrix['has_cwe'] * feature_matrix['num_calls']
+        
+        # Additional feature interactions (non-CWE)
+        if 'entropy' in feature_matrix.columns and 'num_dangerous_calls' in feature_matrix.columns:
+            # High entropy + dangerous calls = potential vulnerability
+            feature_matrix['entropy_dangerous'] = feature_matrix['entropy'] * feature_matrix['num_dangerous_calls']
+        
+        if 'cyclomatic_complexity' in feature_matrix.columns and 'num_dangerous_calls' in feature_matrix.columns:
+            # High complexity + dangerous calls = potential vulnerability
+            feature_matrix['complexity_dangerous'] = feature_matrix['cyclomatic_complexity'] * feature_matrix['num_dangerous_calls']
+        
         # Fill NaN values
         feature_matrix = feature_matrix.fillna(0)
         
@@ -123,7 +159,8 @@ class DatasetBuilder:
         dataset_path = Path(dataset_path)
         
         feature_matrix = pd.read_csv(dataset_path / "features.csv", index_col=0)
-        labels = pd.read_csv(dataset_path / "labels.csv", index_col=0, squeeze=True)
+        labels_df = pd.read_csv(dataset_path / "labels.csv", index_col=0)
+        labels = labels_df.iloc[:, 0] if len(labels_df.columns) > 0 else labels_df.squeeze()
         
         logger.info(f"Loaded dataset from {dataset_path}")
         return feature_matrix, labels

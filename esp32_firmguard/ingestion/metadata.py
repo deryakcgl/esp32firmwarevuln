@@ -65,7 +65,6 @@ def extract_metadata(firmware_path: Path, source: str = "unknown") -> FirmwareMe
         bitness=bitness
     )
     
-    logger.debug(f"Extracted metadata for {firmware_path.name}: {file_size} bytes, MD5: {md5_hash[:8]}...")
     
     return metadata
 

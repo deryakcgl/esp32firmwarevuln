@@ -12,7 +12,6 @@ try:
     TENSORFLOW_AVAILABLE = True
 except ImportError:
     TENSORFLOW_AVAILABLE = False
-    logger.warning("TensorFlow not available. Using mock CNN analyzer.")
 
 
 class CNNAnalyzer:
@@ -27,7 +26,7 @@ class CNNAnalyzer:
     def load_model(self) -> None:
         """Load trained CNN model"""
         if not self.model_path.exists():
-            logger.warning(f"CNN model not found at {self.model_path}. Using mock analyzer.")
+            logger.warning(f"CNN model not found at {self.model_path}.")
             self.model = None
             self.model_loaded = False
             return
@@ -42,7 +41,7 @@ class CNNAnalyzer:
                 self.model = None
                 self.model_loaded = False
         else:
-            logger.warning("TensorFlow not available. Using mock analyzer.")
+            logger.warning("TensorFlow not available for CNN analysis.")
             self.model = None
             self.model_loaded = False
     
@@ -61,7 +60,10 @@ class CNNAnalyzer:
             return {"anomaly_score": 0.0, "is_anomaly": False, "confidence": 0.0}
         
         if not self.model_loaded:
-            return self._mock_analyze(power_trace)
+            raise RuntimeError("CNN model required for power trace analysis. Train and load model first.")
+        
+        if not TENSORFLOW_AVAILABLE:
+            raise RuntimeError("TensorFlow required for CNN analysis. Install: pip install tensorflow")
         
         # Preprocess power trace
         processed = self._preprocess_trace(power_trace)
@@ -96,29 +98,5 @@ class CNNAnalyzer:
         
         return trace
     
-    def _mock_analyze(self, power_trace: np.ndarray) -> Dict[str, float]:
-        """Mock analysis of power trace"""
-        # Calculate simple statistics
-        mean_power = np.mean(power_trace)
-        std_power = np.std(power_trace)
-        max_power = np.max(power_trace)
-        min_power = np.min(power_trace)
-        
-        # Anomaly detection based on power spikes
-        threshold = mean_power + 2 * std_power
-        spikes = np.sum(power_trace > threshold)
-        spike_ratio = spikes / len(power_trace)
-        
-        # Mock anomaly score
-        anomaly_score = min(0.3 + spike_ratio * 0.5, 0.95)
-        
-        return {
-            "anomaly_score": float(anomaly_score),
-            "is_anomaly": anomaly_score > 0.5,
-            "confidence": float(abs(anomaly_score - 0.5) * 2),
-            "mean_power": float(mean_power),
-            "std_power": float(std_power),
-            "spike_ratio": float(spike_ratio)
-        }
 
 

@@ -89,7 +89,11 @@ class EvaluationMetrics:
         else:
             metrics["sri"] = 0.0
         
-        logger.info(f"Computed metrics: P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}, VCR={metrics['vcr']:.3f}, SRI={metrics['sri']:.3f}")
+        # Mean Power Deviation (from hardware validation)
+        mean_power_deviation = self._compute_mean_power_deviation(hw_results)
+        metrics["mean_power_deviation"] = float(mean_power_deviation)
+        
+        logger.info(f"Computed metrics: P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}, VCR={metrics['vcr']:.3f}, SRI={metrics['sri']:.3f}, PowerDev={mean_power_deviation:.3f}")
         
         return metrics
     
@@ -142,13 +146,11 @@ class EvaluationMetrics:
         for pred in high_risk_preds:
             confirmed = False
             
-            # Check fuzzing results
             if fuzz_results and pred.func_id in fuzz_results:
                 fuzz_result = fuzz_results[pred.func_id]
                 if fuzz_result.crashes_found > 0:
                     confirmed = True
             
-            # Check hardware results
             if not confirmed and hw_results and pred.func_id in hw_results:
                 hw_result = hw_results[pred.func_id]
                 if hw_result.is_anomaly:
@@ -175,6 +177,32 @@ class EvaluationMetrics:
         )
         return sri
     
+    def _compute_mean_power_deviation(
+        self,
+        hw_results: Optional[Dict[str, PowerTraceResult]] = None
+    ) -> float:
+        """
+        Compute mean power deviation across all analyzed functions.
+        
+        Mean Power Deviation = mean(std(power_trace)) for all functions
+        """
+        if not hw_results:
+            return 0.0
+        
+        power_deviations = []
+        
+        for result in hw_results.values():
+            if result.power_trace is not None and len(result.power_trace) > 0:
+                # Calculate standard deviation of power trace
+                power_std = float(np.std(result.power_trace))
+                power_deviations.append(power_std)
+        
+        if not power_deviations:
+            return 0.0
+        
+        mean_deviation = np.mean(power_deviations)
+        return float(mean_deviation)
+    
     def _empty_metrics(self) -> Dict[str, float]:
         """Return empty metrics dictionary"""
         return {
@@ -184,6 +212,7 @@ class EvaluationMetrics:
             "accuracy": 0.0,
             "vcr": 0.0,
             "sri": 0.0,
+            "mean_power_deviation": 0.0,
             "true_positives": 0,
             "false_positives": 0,
             "true_negatives": 0,
