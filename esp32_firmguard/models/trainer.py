@@ -18,9 +18,11 @@ except ImportError:
 try:
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.linear_model import LogisticRegression
+    from sklearn.model_selection import train_test_split
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
+    train_test_split = None  # type: ignore
 
 
 class ModelTrainer:
@@ -62,12 +64,27 @@ class ModelTrainer:
             logger.info(f"Removing {len(cwe_cols)} CWE features from training: {cwe_cols[:5]}...")
             feature_matrix = feature_matrix.drop(columns=cwe_cols, errors='ignore')
         
-        # Split data
-        n_train = int(len(feature_matrix) * (1 - validation_split))
-        train_features = feature_matrix.iloc[:n_train]
-        train_labels = labels.iloc[:n_train]
-        val_features = feature_matrix.iloc[n_train:]
-        val_labels = labels.iloc[n_train:]
+        # Split data (shuffled; stratify when both classes exist)
+        stratify = None
+        if SKLEARN_AVAILABLE and train_test_split is not None:
+            y = labels.reindex(feature_matrix.index).fillna(0).astype(int)
+            n_pos = int((y == 1).sum())
+            n_neg = int((y == 0).sum())
+            if n_pos >= 2 and n_neg >= 2:
+                stratify = y
+            train_features, val_features, train_labels, val_labels = train_test_split(
+                feature_matrix,
+                y,
+                test_size=validation_split,
+                random_state=42,
+                stratify=stratify,
+            )
+        else:
+            n_train = int(len(feature_matrix) * (1 - validation_split))
+            train_features = feature_matrix.iloc[:n_train]
+            train_labels = labels.reindex(feature_matrix.index).iloc[:n_train]
+            val_features = feature_matrix.iloc[n_train:]
+            val_labels = labels.reindex(feature_matrix.index).iloc[n_train:]
         
         # Train model - prefer XGBoost, fallback to sklearn
         if self.model_type == "xgboost" and XGBOOST_AVAILABLE:

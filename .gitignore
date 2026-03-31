@@ -55,6 +55,10 @@ output/
 
 # Firmware samples (too large for git - 3.7GB+)
 firmware_samples/
+firmware_samples copy/
+
+# Espressif QEMU (install with scripts/install_espressif_qemu.sh)
+tools/espressif-qemu/
 
 # OS
 .DS_Store

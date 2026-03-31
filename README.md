@@ -12,13 +12,33 @@ ESP32 FirmGuard is a comprehensive static analysis framework for detecting vulne
 - LLM-based CWE classification (OpenAI, Anthropic, Ollama, or pattern-based)
 - XGBoost vulnerability prediction model
 - Comprehensive evaluation metrics
+- Bounded dynamic validation (mutation-based fuzzing + optional QEMU smoke tests)
 
-**Performance:**
-- Precision: 43.5% ± 9.9%
-- Recall: 25.5% ± 5.5%
-- F1 Score: 32.0% ± 6.7%
-- Accuracy: 60.8% ± 4.1%
-- Dataset: 101,966 function samples from 1,747 firmware binaries
+**Performance note (important):**
+- Reported metrics depend heavily on the firmware corpus and the ground-truth labeling strategy.
+- This repository includes scripts to reproduce metrics locally, but large corpora, models, and outputs are typically **not committed** (see `.gitignore`).
+
+**Performance (example results):**
+- The numbers below are **example outputs** from running `scripts/evaluate_readme_aligned.py` on a local corpus.
+- They are **not guaranteed** to match your environment unless you use the same corpus, config, and labeling/ground-truth setup.
+
+Example (README-style: per-firmware mean ± std, CWE-pattern proxy ground truth):
+- Precision: **0.947 ± 0.063**
+- Recall: **1.000 ± 0.000**
+- F1: **0.972 ± 0.035**
+- Accuracy: **0.988 ± 0.015**
+- Corpus scale in that run: **~1960 firmware**, **~97,766 functions** (counted per firmware evaluation)
+
+To reproduce on your machine, run the evaluation script and use the JSON it writes:
+
+```bash
+python scripts/evaluate_readme_aligned.py \
+  --firmware-dir <your_firmware_dir> \
+  --dataset-dir output/datasets/training_data \
+  --model-file vulnerability_model.pkl \
+  --max-cv-samples 100000 \
+  -o output/evaluation/readme_aligned_comparison.json
+```
 
 ## Installation
 
@@ -31,6 +51,22 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+## Optional: Install Espressif QEMU (ESP32 machine)
+
+The stock Homebrew `qemu-system-xtensa` often does **not** include `-machine esp32`.
+This repo provides a helper script to install Espressif’s prebuilt QEMU and configure the project to use it.
+
+```bash
+brew install libgcrypt pixman glib sdl2 gettext
+bash scripts/install_espressif_qemu.sh
+```
+
+By default, `configs/config.yaml` points fuzzing to:
+
+```
+./tools/espressif-qemu/qemu/bin/qemu-system-xtensa
+```
+
 ## Quick Start
 
 ### Analyze a Firmware Binary
@@ -38,6 +74,10 @@ pip install -r requirements.txt
 ```bash
 python -m esp32_firmguard.cli analyze firmware_samples/example_firmware.bin -s test -o results.json
 ```
+
+Notes:
+- Use `--skip-validation` to run static-only analysis.
+- Without `--skip-validation`, the pipeline runs a bounded fuzzing validation stage (see `configs/config.yaml`).
 
 ### Train the Model
 
@@ -77,6 +117,8 @@ Edit `configs/config.yaml` to customize:
 - Model hyperparameters
 - Validation options
 
+Fuzzing-related options live under `validation.fuzzing` (e.g., `mutations_per_function`, `max_functions_to_fuzz`, `qemu_timeout_sec`, `qemu_path`).
+
 ## Project Structure
 
 ```
@@ -95,7 +137,31 @@ firmware_samples/       # Firmware binaries and ground truth
 
 ## Evaluation
 
-See `output/evaluation/EVALUATION_SUMMARY.md` for comprehensive evaluation results, ablation studies, and baseline comparisons.
+### README-aligned evaluation (reproducible)
+
+This repo includes an evaluation script that prints:
+- a documented README baseline block (if you keep it for comparison), and
+- current corpus results as per-firmware mean ± std (README-style),
+- plus optional stratified K-fold CV on a saved dataset.
+
+Example:
+
+```bash
+python scripts/evaluate_readme_aligned.py \
+  --firmware-dir firmware_samples \
+  --dataset-dir output/datasets/training_data \
+  --model-file vulnerability_model.pkl \
+  --max-cv-samples 100000 \
+  -o output/evaluation/readme_aligned_comparison.json
+```
+
+### QEMU + fuzzing visibility demo
+
+To see QEMU baseline vs mutated runs and per-function fuzz details in the terminal:
+
+```bash
+python scripts/demo_qemu_fuzz_smoke.py --firmware path/to/firmware.bin --mutations 8 --max-funcs 2
+```
 
 ## License
 

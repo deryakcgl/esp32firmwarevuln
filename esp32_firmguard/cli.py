@@ -48,9 +48,9 @@ def analyze_firmware(args):
         predictions_data = [
             {
                 "func_id": p.func_id,
-                "score": p.score,
+                "score": float(p.score),
                 "cwe": p.cwe,
-                "is_vulnerable": p.is_vulnerable
+                "is_vulnerable": bool(p.is_vulnerable),
             }
             for p in results["predictions"]
         ]

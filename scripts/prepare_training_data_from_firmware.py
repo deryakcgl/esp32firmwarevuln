@@ -21,7 +21,10 @@ def create_training_data_from_firmware_dir(firmware_dir: Path, output_dir: Path,
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Find all firmware files
-    firmware_files = list(firmware_dir.rglob("*.bin")) + list(firmware_dir.rglob("*.elf"))
+    firmware_files = []
+    for pattern in ("*.bin", "*.elf", "*.img"):
+        firmware_files.extend(firmware_dir.rglob(pattern))
+    firmware_files = sorted({p.resolve() for p in firmware_files})
     
     if not firmware_files:
         print(f"Firmware bulunamadı: {firmware_dir}")
@@ -92,6 +95,13 @@ def create_training_data_from_firmware_dir(firmware_dir: Path, output_dir: Path,
         combined_embeddings,
         all_cwe_labels
     )
+
+    n_before = len(feature_matrix)
+    if feature_matrix.index.duplicated().any():
+        nd = int(feature_matrix.index.duplicated().sum())
+        print(f"\n⚠️  {nd} duplicate index rows in feature matrix; deduplicating (keep='first').")
+        feature_matrix = feature_matrix[~feature_matrix.index.duplicated(keep="first")]
+        print(f"   Rows: {n_before} -> {len(feature_matrix)}")
     
     # Create labels from CWE labels
     # Strategy: If function has CWE label, consider it vulnerable (1)

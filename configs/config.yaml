@@ -56,10 +56,20 @@ model:
 validation:
   fuzzing:
     enabled: true
-    qemu_path: /opt/homebrew/bin/qemu-system-xtensa
+    # Stock Homebrew QEMU has no esp32 machine; use Espressif build (scripts/install_espressif_qemu.sh).
+    qemu_path: ./tools/espressif-qemu/qemu/bin/qemu-system-xtensa
     afl_path: /usr/local/bin/afl-fuzz
     timeout: 3600
     max_crashes: 100
+    # Bounded mutation fuzzing + optional QEMU esp32 smoke (see esp32_firmguard.validation.fuzzing)
+    qemu_machine: esp32
+    qemu_timeout_sec: 2.0
+    mutations_per_function: 4
+    max_functions_to_fuzz: 4
+    allow_mutation_only: true
+    fallback_oracle: esp_image
+    flash_load_address: "0x40000000"
+    esp_flash_pad: true
   hardware:
     enabled: true
     ina219_address: 64
