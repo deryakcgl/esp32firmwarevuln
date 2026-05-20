@@ -1,5 +1,3 @@
-"""Common utility functions for ESP32 FirmGuard"""
-
 import yaml
 import logging
 from pathlib import Path

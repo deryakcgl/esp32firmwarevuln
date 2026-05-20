@@ -1,5 +1,3 @@
-"""Peripheral-aware feature extraction (I/O, UART, SPI, WiFi, etc.)"""
-
 import logging
 from typing import Dict, Any, List
 import pandas as pd

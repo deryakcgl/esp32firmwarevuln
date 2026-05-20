@@ -1,351 +1,189 @@
-"""LLM-based CWE labeling for firmware functions"""
-
-import logging
-from typing import Dict, Any, List, Optional
 import json
-import os
+import logging
+import re
+from typing import Any, Callable, Dict, List, Optional
+
+from .ollama_util import ollama_chat
 
 logger = logging.getLogger(__name__)
 
+LabelProgressCallback = Callable[[int, int, str], None]
+LlmTraceCallback = Callable[[Dict[str, Any]], None]
+
+_SYSTEM = (
+    "You label ESP32 firmware functions with CWE IDs. "
+    'Return ONLY a JSON array of CWE IDs, e.g. ["CWE-120"] or [].'
+)
+
 
 class CWELabeler:
-    """Label functions with CWE categories using LLM"""
-    
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        cwe_catalog=None,
+        trace_callback: Optional[LlmTraceCallback] = None,
+    ):
         self.config = config
-        self.llm_config = config.get("llm", {})
-        self.provider = self.llm_config.get("provider", "ollama")
-        self.model = self.llm_config.get("model", "llama3")
-        self.temperature = self.llm_config.get("temperature", 0.3)
-        self.cwe_categories = self.llm_config.get("cwe_categories", [])
-        
-        # Get API key based on provider
-        if self.provider == "openai":
-            self.api_key = os.getenv("OPENAI_API_KEY") or self.llm_config.get("api_key")
-        elif self.provider == "anthropic":
-            self.api_key = os.getenv("ANTHROPIC_API_KEY") or self.llm_config.get("api_key")
-        elif self.provider == "ollama":
-            # Ollama doesn't need API key, uses local server
-            self.api_key = None
-            self.ollama_url = self.llm_config.get("ollama_url", "http://localhost:11434")
+        self.cwe_catalog = cwe_catalog
+        self.trace_callback = trace_callback
+        llm = config.get("llm", {})
+        self.model = llm.get("model", "llama3.2")
+        self.temperature = float(llm.get("temperature", 0.3))
+        self.ollama_url = llm.get("ollama_url", "http://localhost:11434")
+        self.ollama_timeout = float(llm.get("ollama_timeout", 120))
+        if cwe_catalog is not None and getattr(cwe_catalog, "cwe_ids", None):
+            self.cwe_categories = list(cwe_catalog.cwe_ids)
         else:
-            self.api_key = self.llm_config.get("api_key")
-        
-        # Pattern-based labeling as fallback when LLM unavailable
-        if self.provider == "pattern":
-            self.pattern_mode = True
-        elif self.provider == "ollama":
-            # Check if Ollama is available
-            try:
-                import requests
-                response = requests.get(f"{self.ollama_url}/api/tags", timeout=2)
-                response.raise_for_status()
-                self.pattern_mode = False
-                logger.info(f"Using Ollama with model: {self.model} at {self.ollama_url}")
-            except:
-                self.pattern_mode = True
-                logger.warning("Ollama not available. Using pattern-based labeling.")
-        elif self.provider == "openai":
-            self.pattern_mode = (self.api_key is None)
-            if not self.pattern_mode:
-                logger.info(f"Using OpenAI with model: {self.model}")
-        elif self.provider == "anthropic":
-            self.pattern_mode = (self.api_key is None)
-            if not self.pattern_mode:
-                logger.info(f"Using Anthropic with model: {self.model}")
-        else:
-            self.pattern_mode = True
-            logger.warning(f"Unknown provider '{self.provider}'. Using pattern-based labeling.")
-        
-        if self.pattern_mode:
-            logger.info("Using pattern-based CWE labeling (fast mode).")
-    
-    def label(self, firmware_obj) -> Dict[str, List[str]]:
-        """
-        Label each function with CWE categories.
-        
-        Args:
-            firmware_obj: FirmwareObject with functions to label
-        
-        Returns:
-            Dictionary mapping function_id -> list of CWE IDs
-        """
-        functions = firmware_obj.functions
+            self.cwe_categories = list(llm.get("cwe_categories") or [])
+
+    def label(
+        self,
+        firmware_obj,
+        progress_callback: Optional[LabelProgressCallback] = None,
+        trace_callback: Optional[LlmTraceCallback] = None,
+    ) -> Dict[str, List[str]]:
+        functions = firmware_obj.functions or {}
         if not functions:
-            logger.warning("No functions found in firmware object")
             return {}
-        
-        labels = {}
-        
-        for func_id, func_info in functions.items():
-            cwe_labels = self._label_function(func_id, func_info)
-            labels[func_id] = cwe_labels
-        
-        logger.info(f"Labeled {len(labels)} functions with CWE categories")
+
+        labels: Dict[str, List[str]] = {}
+        items = list(functions.items())
+        trace_cb = trace_callback or self.trace_callback
+
+        for idx, (func_id, func_info) in enumerate(items, start=1):
+            if progress_callback:
+                name = func_info.get("name") or func_id
+                progress_callback(idx - 1, len(items), f"CWE: {name}")
+            labels[func_id] = self._label_function(func_id, func_info, trace_cb)
+
+        if progress_callback and items:
+            progress_callback(len(items), len(items), "CWE labeling complete")
         return labels
-    
-    def _label_function(self, func_id: str, func_info: Dict[str, Any]) -> List[str]:
-        """Label a single function with CWE categories"""
-        if not self.pattern_mode:
-            try:
-                return self._label_with_llm(func_id, func_info)
-            except Exception as e:
-                logger.warning(f"LLM API call failed for {func_id}: {e}. Using pattern-based labeling.")
-        
-        return self._advanced_pattern_labeling(func_id, func_info)
-    
-    def _label_with_llm(self, func_id: str, func_info: Dict[str, Any]) -> List[str]:
-        """Label function using real LLM API"""
-        prompt = self._build_prompt(func_info)
-        response = self._call_llm_api(prompt)
-        
-        # Parse LLM response
+
+    def _label_function(
+        self,
+        func_id: str,
+        func_info: Dict[str, Any],
+        trace_callback: Optional[LlmTraceCallback],
+    ) -> List[str]:
         try:
-            # Try to extract JSON array from response
-            import re
-            # Look for JSON array pattern
-            json_match = re.search(r'\[.*?\]', response, re.DOTALL)
-            if json_match:
-                try:
-                    cwe_list = json.loads(json_match.group())
-                    if isinstance(cwe_list, list):
-                        return [str(cwe) for cwe in cwe_list if str(cwe).startswith("CWE-")]
-                except json.JSONDecodeError:
-                    # Try to find CWE IDs directly in text
-                    cwe_pattern = r'CWE-\d+'
-                    cwe_matches = re.findall(cwe_pattern, response)
-                    if cwe_matches:
-                        return list(set(cwe_matches))  # Remove duplicates
-        except Exception as e:
-            logger.warning(f"Failed to parse LLM response: {e}")
-            # Fallback: extract CWE IDs directly
-            try:
-                import re
-                cwe_pattern = r'CWE-\d+'
-                cwe_matches = re.findall(cwe_pattern, response)
-                if cwe_matches:
-                    return list(set(cwe_matches))
-            except:
-                pass
-        
-        return []
-    
-    def _advanced_pattern_labeling(self, func_id: str, func_info: Dict[str, Any]) -> List[str]:
-        """Pattern-based CWE labeling using vulnerability pattern heuristics"""
-        func_name = func_info.get("name", "").lower()
-        calls = [c.lower() for c in func_info.get("calls", [])]
-        strings = [s.lower() for s in func_info.get("strings", [])]
-        size = func_info.get("size", 0)
-        instructions = func_info.get("instructions", 0)
-        entropy = func_info.get("entropy", 6.5)
-        
-        cwe_labels = []
-        vulnerability_score = 0.0
-        
-        # CWE-120: Buffer Overflow (Classic)
-        buffer_overflow_indicators = {
-            "dangerous_calls": ["strcpy", "sprintf", "gets", "scanf", "vsprintf"],
-            "context_keywords": ["buffer", "copy", "input", "read", "receive"],
-            "risk_multiplier": 1.0
-        }
-        if any(dc in calls for dc in buffer_overflow_indicators["dangerous_calls"]):
-            if any(kw in func_name for kw in buffer_overflow_indicators["context_keywords"]):
-                cwe_labels.append("CWE-120")
-                vulnerability_score += 0.8
-            elif "memcpy" in calls and size > 256:
-                cwe_labels.append("CWE-120")
-                vulnerability_score += 0.6
-        
-        # CWE-787: Out-of-bounds Write
-        if any(unsafe in calls for unsafe in ["memcpy", "strcpy", "memset", "memmove"]):
-            if any(idx in func_name for idx in ["array", "index", "offset", "ptr"]):
-                cwe_labels.append("CWE-787")
-                vulnerability_score += 0.7
-            elif entropy > 7.5 and size > 200:  # High entropy + unsafe operations
-                cwe_labels.append("CWE-787")
-                vulnerability_score += 0.5
-        
-        # CWE-416: Use After Free
-        if "free" in calls and "malloc" in calls:
-            # Multiple malloc/free pairs suggest potential UAF
-            malloc_count = sum(1 for c in calls if "malloc" in c or "calloc" in c or "realloc" in c)
-            free_count = sum(1 for c in calls if "free" in c)
-            if malloc_count > 1 and free_count > 1:
-                cwe_labels.append("CWE-416")
-                vulnerability_score += 0.6
-            elif any(ptr in func_name for ptr in ["pointer", "ptr", "deref", "ref"]):
-                cwe_labels.append("CWE-416")
-                vulnerability_score += 0.7
-        
-        # CWE-190: Integer Overflow / Underflow
-        if any(math_op in func_name for math_op in ["add", "multiply", "calculate", "compute", "size", "length"]):
-            if "malloc" in calls or "calloc" in calls:
-                # Size calculation before allocation
-                cwe_labels.append("CWE-190")
-                vulnerability_score += 0.6
-            elif any(arith in calls for arith in ["*", "+", "-", "multiply", "add"]):
-                cwe_labels.append("CWE-190")
-                vulnerability_score += 0.5
-        
-        # CWE-79: Cross-site Scripting (XSS) - for web-related functions
-        web_indicators = ["http", "web", "html", "url", "request", "response", "header"]
-        if any(web in func_name or any(web in s for s in strings) for web in web_indicators):
-            if any(input_kw in func_name for input_kw in ["input", "parse", "process", "handle"]):
-                if "strcpy" in calls or "sprintf" in calls:  # Unsafe string operations
-                    cwe_labels.append("CWE-79")
-                    vulnerability_score += 0.7
-        
-        # CWE-89: SQL Injection
-        if any(db in func_name or any(db in s for s in strings) for db in ["sql", "query", "database", "db"]):
-            if any(exec_kw in func_name for exec_kw in ["input", "execute", "query", "run"]):
-                if "sprintf" in calls or "strcpy" in calls:
-                    cwe_labels.append("CWE-89")
-                    vulnerability_score += 0.8
-        
-        # CWE-22: Path Traversal
-        if any(path_kw in func_name for path_kw in ["path", "file", "open", "read", "write"]):
-            if "strcpy" in calls or "sprintf" in calls:
-                if any(unsafe in strings for unsafe in ["../", "..\\", "/", "\\"]):
-                    cwe_labels.append("CWE-22")
-                    vulnerability_score += 0.6
-        
-        # CWE-78: Command Injection
-        if any(cmd_kw in func_name for cmd_kw in ["command", "exec", "system", "shell", "run"]):
-            if "sprintf" in calls or "system" in calls:
-                cwe_labels.append("CWE-78")
-                vulnerability_score += 0.8
-        
-        # CWE-311: Missing Encryption
-        if any(crypto_kw in func_name for crypto_kw in ["password", "secret", "key", "token", "auth"]):
-            if not any(enc in calls for enc in ["encrypt", "aes", "sha", "md5", "crypto"]):
-                if "strcpy" in calls or "memcpy" in calls:  # Plaintext handling
-                    cwe_labels.append("CWE-311")
-                    vulnerability_score += 0.5
-        
-        # CWE-327: Use of Broken Crypto
-        if any(crypto in calls for crypto in ["md5", "des", "rc4"]):
-            # Weak cryptographic algorithms
-            cwe_labels.append("CWE-327")
-            vulnerability_score += 0.4
-        
-        # CWE-798: Hard-coded Credentials
-        if any(cred_kw in func_name for cred_kw in ["password", "secret", "key", "token"]):
-            if any(hardcode in strings for hardcode in ["password", "admin", "1234", "default"]):
-                cwe_labels.append("CWE-798")
-                vulnerability_score += 0.9
-        
-        # Additional heuristics based on complexity and patterns
-        # High complexity + dangerous operations = higher risk
-        complexity_score = (instructions / 100.0) + (entropy / 8.0)
-        if complexity_score > 1.5 and vulnerability_score > 0.3:
-            # Add CWE-120 if not already present and high risk
-            if "CWE-120" not in cwe_labels and any(dc in calls for dc in ["strcpy", "sprintf", "memcpy"]):
-                cwe_labels.append("CWE-120")
-        
-        # Remove duplicates and return
-        return sorted(list(set(cwe_labels)))
-    
-    def _call_llm_api(self, prompt: str) -> str:
-        """
-        Call LLM API to get CWE labels.
-        
-        Returns:
-            JSON string with CWE labels
-        """
-        if self.provider == "openai":
-            try:
-                from openai import OpenAI
-                client = OpenAI(api_key=self.api_key)
-                response = client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are a security expert analyzing firmware code for CWE vulnerabilities. Return only a JSON array of CWE IDs."
-                        },
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=self.temperature,
-                    max_tokens=500
-                )
-                return response.choices[0].message.content
-            except ImportError:
-                raise ImportError("OpenAI library not installed. Install with: pip install openai")
-            except Exception as e:
-                raise Exception(f"OpenAI API error: {e}")
-        
-        elif self.provider == "anthropic":
-            try:
-                from anthropic import Anthropic
-                client = Anthropic(api_key=self.api_key)
-                response = client.messages.create(
-                    model=self.model,
-                    max_tokens=500,
-                    temperature=self.temperature,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                return response.content[0].text
-            except ImportError:
-                raise ImportError("Anthropic library not installed. Install with: pip install anthropic")
-            except Exception as e:
-                raise Exception(f"Anthropic API error: {e}")
-        
-        elif self.provider == "ollama":
-            # Ollama - Tamamen ücretsiz, local çalışır
-            try:
-                import requests
-                response = requests.post(
-                    f"{self.ollama_url}/api/chat",
-                    json={
-                        "model": self.model,
-                        "messages": [
-                            {
-                                "role": "system",
-                                "content": "You are a security expert analyzing firmware code for CWE vulnerabilities. Return only a JSON array of CWE IDs."
-                            },
-                            {"role": "user", "content": prompt}
-                        ],
-                        "options": {
-                            "temperature": self.temperature
-                        },
-                        "stream": False  # Non-streaming mode
-                    },
-                    timeout=10  # Reduced timeout for faster failure
-                )
-                response.raise_for_status()
-                result = response.json()
-                # Ollama returns {"message": {"content": "..."}, ...}
-                if "message" in result and "content" in result["message"]:
-                    return result["message"]["content"]
-                else:
-                    # Fallback: try to get content directly
-                    return str(result.get("message", result))
-            except ImportError:
-                raise ImportError("Requests library not installed. Install with: pip install requests")
-            except requests.exceptions.ConnectionError:
-                raise Exception(f"Ollama connection error. Make sure Ollama is running: ollama serve")
-            except Exception as e:
-                raise Exception(f"Ollama API error: {e}")
-        
-        else:
-            raise ValueError(f"Unsupported LLM provider: {self.provider}. Supported: openai, anthropic, ollama")
-    
+            cwes, raw = self._label_with_llm(func_info)
+            note = ""
+            if not cwes and self.cwe_catalog is not None:
+                cwes = self.cwe_catalog.signal_matches(func_info)
+                if not cwes:
+                    cwes = self.cwe_catalog.heuristic_hints(func_info)
+                if cwes:
+                    note = f"\n[catalog fallback: {', '.join(cwes)}]"
+            self._emit_trace(func_id, func_info, raw + note, cwes, trace_callback)
+            return cwes
+        except Exception as exc:
+            raise RuntimeError(f"Ollama labeling failed for {func_id}: {exc}") from exc
+
+    def _label_with_llm(self, func_info: Dict[str, Any]) -> tuple[List[str], str]:
+        prompt = self._build_prompt(func_info)
+        raw = ollama_chat(
+            prompt,
+            system=_SYSTEM,
+            model=self.model,
+            base_url=self.ollama_url,
+            temperature=self.temperature,
+            timeout=self.ollama_timeout,
+        )
+        allowed = list(self.cwe_categories) if self.cwe_categories else None
+        return self.parse_llm_cwe_response(raw, allowed=allowed), raw
+
+    @staticmethod
+    def parse_llm_cwe_response(response: str, allowed: Optional[List[str]] = None) -> List[str]:
+        if not response:
+            return []
+        text = response.strip()
+        if "```" in text:
+            for block in re.findall(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE):
+                text = block.strip()
+                break
+        try:
+            match = re.search(r"\[[\s\S]*?\]", text)
+            if match:
+                data = json.loads(match.group())
+                if isinstance(data, list):
+                    out = []
+                    for item in data:
+                        s = str(item).strip().upper()
+                        if re.match(r"CWE-\d+", s):
+                            out.append(s if s.startswith("CWE-") else f"CWE-{s.split('-')[-1]}")
+                    if allowed:
+                        allow = {a.upper() for a in allowed}
+                        out = [c for c in out if c in allow]
+                    return sorted(set(out))
+        except json.JSONDecodeError:
+            pass
+        out = sorted({f"CWE-{m.split('-')[-1]}" for m in re.findall(r"CWE-\d+", text, re.IGNORECASE)})
+        if allowed:
+            allow = {a.upper() for a in allowed}
+            out = [c for c in out if c in allow]
+        return out
+
     def _build_prompt(self, func_info: Dict[str, Any]) -> str:
-        """Build prompt for LLM to analyze function"""
-        func_name = func_info.get("name", "unknown")
+        name = func_info.get("name", "unknown")
         calls = func_info.get("calls", [])
         strings = func_info.get("strings", [])
-        
-        prompt = f"""Analyze the following firmware function and identify potential CWE vulnerabilities.
+        asm = (func_info.get("disassembly") or "")[:2500]
+        source_file = func_info.get("source_file") or ""
+        line_start = func_info.get("line_start")
+        line_end = func_info.get("line_end")
 
-Function Name: {func_name}
-Function Calls: {', '.join(calls)}
-Strings: {', '.join(strings)}
+        catalog_block = ""
+        hints: List[str] = []
+        if self.cwe_catalog is not None:
+            catalog_block = self.cwe_catalog.prompt_block()
+            hints = self.cwe_catalog.heuristic_hints(func_info)
 
-CWE Categories to consider: {', '.join(self.cwe_categories)}
+        loc = ""
+        if source_file:
+            loc = f"\nSource: {source_file}"
+            if line_start:
+                loc += f" lines {line_start}-{line_end or line_start}"
 
-Return a JSON array of CWE IDs that apply to this function, or an empty array if none apply.
-Format: ["CWE-XXX", "CWE-YYY"]
-"""
-        return prompt
+        source_block = ""
+        snip = func_info.get("source_snippet") or {}
+        for row in (snip.get("lines") or [])[:40]:
+            source_block += f"  {row.get('number', '?')}: {row.get('text', '')}\n"
+        if source_block:
+            path = snip.get("resolved_path") or source_file or "?"
+            source_block = f"\nSource ({path}):\n{source_block}"
 
+        hints_line = f"\nConsider: {', '.join(hints)}\n" if hints else ""
+        allowed = ", ".join(self.cwe_categories) if self.cwe_categories else "(see catalog)"
+
+        return (
+            f"Assign CWE IDs for this ESP32 function.\n\n"
+            f"{catalog_block}{hints_line}\n"
+            f"Function: {name}\n"
+            f"Calls: {', '.join(calls) if calls else '(none)'}\n"
+            f"Strings: {', '.join(strings[:20]) if strings else '(none)'}{loc}\n"
+            f"{source_block}\n"
+            f"Disassembly:\n{asm or '(none)'}\n\n"
+            f"Allowed: {allowed}\n"
+            f"Reply with ONLY a JSON array."
+        )
+
+    def _emit_trace(
+        self,
+        func_id: str,
+        func_info: Dict[str, Any],
+        raw: str,
+        cwes: List[str],
+        trace_callback: Optional[LlmTraceCallback],
+    ) -> None:
+        trace = {
+            "func_id": func_id,
+            "function_name": func_info.get("name") or func_id,
+            "provider": "ollama",
+            "model": self.model,
+            "raw_response": (raw or "")[:8000],
+            "parsed_cwe": list(cwes),
+        }
+        func_info["llm_trace"] = trace
+        if trace_callback:
+            trace_callback(trace)

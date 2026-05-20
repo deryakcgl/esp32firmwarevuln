@@ -1,169 +1,120 @@
 # ESP32 FirmGuard
 
-ESP32 firmware security analysis pipeline for vulnerability detection using static analysis, LLM-based semantic labeling, and machine learning.
+ESP32 firmware vulnerability analysis: static features, CWE labeling, ML risk scoring, and a **desktop app** that shows **function name, source file, line numbers, and highlighted source code** for each finding.
 
-## Overview
+## Desktop app (primary workflow)
 
-ESP32 FirmGuard is a comprehensive static analysis framework for detecting vulnerabilities in ESP32 firmware binaries. The system combines structural feature extraction, peripheral analysis, semantic embeddings, and XGBoost-based risk prediction to identify potential security issues.
+1. **Train my model** — upload debug ELF files (`-g`) and a **source root** per firmware; the app builds a dataset, splits by firmware, trains XGBoost, saves `output/models/user_model.pkl`.
+2. **Test my firmware** — upload a debug ELF; review functions sorted by risk (highest first). **Vulnerable rows are red**; select a row to see source with highlighted lines.
 
-**Key Features:**
-- Static analysis of firmware binaries (Binwalk, EMBA, Ghidra)
-- Multi-dimensional feature extraction (structural, peripheral, semantic)
-- LLM-based CWE classification (OpenAI, Anthropic, Ollama, or pattern-based)
-- XGBoost vulnerability prediction model
-- Comprehensive evaluation metrics
-- Bounded dynamic validation (mutation-based fuzzing + optional QEMU smoke tests)
+### Requirements
 
-**Performance note (important):**
-- Reported metrics depend heavily on the firmware corpus and the ground-truth labeling strategy.
-- This repository includes scripts to reproduce metrics locally, but large corpora, models, and outputs are typically **not committed** (see `.gitignore`).
-
-**Performance (example results):**
-- The numbers below are **example outputs** from running `scripts/evaluate_readme_aligned.py` on a local corpus.
-- They are **not guaranteed** to match your environment unless you use the same corpus, config, and labeling/ground-truth setup.
-
-Example (README-style: per-firmware mean ± std, CWE-pattern proxy ground truth):
-- Precision: **0.947 ± 0.063**
-- Recall: **1.000 ± 0.000**
-- F1: **0.972 ± 0.035**
-- Accuracy: **0.988 ± 0.015**
-- Corpus scale in that run: **~1960 firmware**, **~97,766 functions** (counted per firmware evaluation)
-
-To reproduce on your machine, run the evaluation script and use the JSON it writes:
+- Python 3.10+
+- **ESP-IDF / Xtensa toolchain** on `PATH`: `xtensa-esp32-elf-objdump`, `xtensa-esp32-elf-addr2line`
+- Firmware built **with debug symbols** (`-g`)
 
 ```bash
-python scripts/evaluate_readme_aligned.py \
-  --firmware-dir <your_firmware_dir> \
-  --dataset-dir output/datasets/training_data \
-  --model-file vulnerability_model.pkl \
-  --max-cv-samples 100000 \
-  -o output/evaluation/readme_aligned_comparison.json
-```
-
-## Installation
-
-```bash
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+
+# Optional: prepend Xtensa tools
+source scripts/esp_prepend_xtensa_tools.sh
+
+python -m firmguard_desktop
 ```
 
-## Optional: Install Espressif QEMU (ESP32 machine)
+Point **Source root** at your project directory (sketch / `main/`) so DWARF paths resolve to `.c` / `.cpp` files on disk.
 
-The stock Homebrew `qemu-system-xtensa` often does **not** include `-machine esp32`.
-This repo provides a helper script to install Espressif’s prebuilt QEMU and configure the project to use it.
+### CWE labels (Excel + Ollama)
+
+All training and analysis **requires a CWE Excel file** (desktop, CLI, API, scripts).
+
+1. **CWE catalog** (`cwe_id`, `llm_labeling_rule`, `use_as_label`, …) → Ollama labels every function using your Excel rules.
+2. **Per-function rows** (`function_name`, `cwe`, …) → Excel rows are used first; Ollama fills functions without a row.
+
+Set default path in `configs/config.yaml` → `labeling.excel_path`, or pass `--cwe-excel` / upload in the API.
+
+Ollama must be running for LLM steps (`ollama pull llama3.2`). Desktop → **Test connection** in the CWE section.
+
+### Optional HTTP API
 
 ```bash
-brew install libgcrypt pixman glib sdl2 gettext
-bash scripts/install_espressif_qemu.sh
+uvicorn esp32_firmguard.api.app:app --port 8765
 ```
 
-By default, `configs/config.yaml` points fuzzing to:
+`POST /train` (ELF files + **cwe_excel** file), `POST /analyze` (ELF + **cwe_excel** + optional `source_root`, `model_path`).
 
-```
-./tools/espressif-qemu/qemu/bin/qemu-system-xtensa
-```
-
-## Quick Start
-
-### Analyze a Firmware Binary
+## CLI (automation)
 
 ```bash
-python -m esp32_firmguard.cli analyze firmware_samples/example_firmware.bin -s test -o results.json
+# Analyze debug ELF
+python -m esp32_firmguard.cli analyze \
+  --elf path/to/firmware.elf \
+  --source-root path/to/project/source \
+  --cwe-excel path/to/cwe_catalog.xlsx \
+  -o output/results.json
+
+# Train from debug ELFs
+python -m esp32_firmguard.cli train \
+  --elf path/to/fw1.elf --elf path/to/fw2.elf \
+  --source-root path/to/project/source \
+  --cwe-excel path/to/cwe_catalog.xlsx
 ```
 
-Notes:
-- Use `--skip-validation` to run static-only analysis.
-- Without `--skip-validation`, the pipeline runs a bounded fuzzing validation stage (see `configs/config.yaml`).
-
-### Train the Model
-
-```bash
-python scripts/prepare_training_data_from_firmware.py firmware_samples/filtered -o ./output/datasets/training_data
-python -m esp32_firmguard.cli train ./output/datasets/training_data -m ./output/models/vulnerability_model.pkl
-```
-
-### Python API
+## Python services API
 
 ```python
-from esp32_firmguard.utils import load_config, setup_logging
-from esp32_firmguard.pipeline import FirmwareSecurityPipeline
+from esp32_firmguard.utils import load_config
+from esp32_firmguard.services import TrainingService, AnalysisService
 
 config = load_config("configs/config.yaml")
-setup_logging("INFO")
-pipeline = FirmwareSecurityPipeline(config)
 
-# Run static analysis
-fw, features, predictions, cwe_labels = pipeline.run_static_stage(
-    firmware_path="firmware.bin",
-    source="test"
+TrainingService(config).train(
+    ["build/project.elf"],
+    source_roots_map={"project": ["/path/to/project"]},
+    cwe_excel_path="path/to/cwe_catalog.xlsx",
 )
 
-# Evaluate with ground truth
-metrics = pipeline.evaluate(
-    ground_truth=ground_truth_dict,
-    predictions=predictions
+result = AnalysisService(config).analyze(
+    "build/project.elf",
+    model_path="output/models/user_model.pkl",
+    source_roots=["/path/to/project"],
+    cwe_excel_path="path/to/cwe_catalog.xlsx",
 )
+for f in result.findings:
+    print(f.score, f.name, f.source_file, f.line_start)
 ```
+
+## Pipeline architecture
+
+```
+Upload debug ELF
+    → ELF symbols + objdump disassembly
+    → DWARF (addr2line) → source_file, line_start/end
+    → Read source snippet from disk
+    → Features + CWE labels → XGBoost predict
+    → Ranked findings with source context
+```
+
+| Package | Role |
+|---------|------|
+| `esp32_firmguard/ingestion/` | ELF extraction, DWARF mapping, source snippets |
+| `esp32_firmguard/features/` | Structural, peripheral, embedding features |
+| `esp32_firmguard/labeling/` | CWE labeling (Excel + Ollama) |
+| `esp32_firmguard/models/` | Dataset, trainer, predictor |
+| `esp32_firmguard/services/` | Training & analysis orchestration |
+| `esp32_firmguard/api/` | FastAPI wrapper |
+| `firmguard_desktop/` | PySide6 GUI |
 
 ## Configuration
 
-Edit `configs/config.yaml` to customize:
-- Feature extraction settings
-- LLM provider and model selection
-- Model hyperparameters
-- Validation options
+Edit `configs/config.yaml`: `labeling.excel_path`, model threshold, Ollama settings, ELF extraction limits.
 
-Fuzzing-related options live under `validation.fuzzing` (e.g., `mutations_per_function`, `max_functions_to_fuzz`, `qemu_timeout_sec`, `qemu_path`).
+## Scripts
 
-## Project Structure
-
-```
-esp32_firmguard/
-├── ingestion/          # Firmware extraction (Binwalk, EMBA, Ghidra)
-├── features/           # Feature extraction (structural, peripheral, embeddings)
-├── labeling/           # CWE classification (LLM-based)
-├── models/             # Model training and prediction
-├── validation/         # Dynamic validation (fuzzing, hardware)
-└── metrics/            # Evaluation metrics
-
-scripts/                # Utility scripts for training, evaluation, data collection
-output/                 # Analysis results, models, datasets
-firmware_samples/       # Firmware binaries and ground truth
-```
-
-## Evaluation
-
-### README-aligned evaluation (reproducible)
-
-This repo includes an evaluation script that prints:
-- a documented README baseline block (if you keep it for comparison), and
-- current corpus results as per-firmware mean ± std (README-style),
-- plus optional stratified K-fold CV on a saved dataset.
-
-Example:
-
-```bash
-python scripts/evaluate_readme_aligned.py \
-  --firmware-dir firmware_samples \
-  --dataset-dir output/datasets/training_data \
-  --model-file vulnerability_model.pkl \
-  --max-cv-samples 100000 \
-  -o output/evaluation/readme_aligned_comparison.json
-```
-
-### QEMU + fuzzing visibility demo
-
-To see QEMU baseline vs mutated runs and per-function fuzz details in the terminal:
-
-```bash
-python scripts/demo_qemu_fuzz_smoke.py --firmware path/to/firmware.bin --mutations 8 --max-funcs 2
-```
+See [scripts/README.md](scripts/README.md) for corpus download and demo shell wrappers.
 
 ## License
 
 MIT License
-

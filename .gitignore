@@ -57,8 +57,8 @@ output/
 firmware_samples/
 firmware_samples copy/
 
-# Espressif QEMU (install with scripts/install_espressif_qemu.sh)
-tools/espressif-qemu/
+# Legacy local QEMU headers (not used by FirmGuard)
+tools/
 
 # OS
 .DS_Store

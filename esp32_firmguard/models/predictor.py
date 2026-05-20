@@ -1,5 +1,3 @@
-"""Vulnerability prediction using trained models"""
-
 import logging
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional

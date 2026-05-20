@@ -1,86 +1,23 @@
 paths:
-  analysis_output: ./output/analysis
   model_output: ./output/models
   dataset_output: ./output/datasets
-  firmware_samples: ./firmware_samples
-extraction:
-  binwalk_path: binwalk
-  emba_path: /tmp/emba/emba
-  ghidra_path: /opt/homebrew/Cellar/ghidra/11.4.2/libexec/support/analyzeHeadless
-features:
-  structural:
-    enabled: true
-    include_entropy: true
-    include_cfg_metrics: true
-  peripheral:
-    enabled: true
-    io_patterns:
-    - uart
-    - spi
-    - i2c
-    - gpio
-    - wifi
-    - bluetooth
-  embeddings:
-    enabled: true
-    model_name: gpt-4
+
+labeling:
+  excel_path: null
+
 llm:
-  provider: pattern
-  model: llama3
+  model: llama3.2
   ollama_url: http://localhost:11434
-  api_key: null
+  ollama_timeout: 120
   temperature: 0.3
-  max_tokens: 500
-  cwe_categories:
-  - CWE-79
-  - CWE-89
-  - CWE-120
-  - CWE-190
-  - CWE-787
-  - CWE-416
+
+extraction:
+  elf_max_functions: 400
+  elf_max_disasm_bytes: 8192
+
 model:
   type: xgboost
-  n_estimators: 1000  # Significantly increased from 200
-  max_depth: 15  # Increased from 8
-  learning_rate: 0.005  # Decreased from 0.05 (better with more trees)
   threshold: 0.4
-  scale_pos_weight: auto
-  fn_cost_multiplier: 5.0
-  subsample: 0.8
-  colsample_bytree: 0.8
-  min_child_weight: 3  # Increased from 1 (more regularization)
-  gamma: 0.5  # Increased from 0.1 (more regularization)
-  reg_alpha: 1.0  # Increased from 0.1 (L1 regularization - feature selection)
-  reg_lambda: 5.0  # Increased from 1.0 (L2 regularization - reduce CWE dependency)
-  cwe_boost_factor: 0.3  # Post-processing: boost score by 0.3 if CWE exists (max 0.95)
-validation:
-  fuzzing:
-    enabled: true
-    # Stock Homebrew QEMU has no esp32 machine; use Espressif build (scripts/install_espressif_qemu.sh).
-    qemu_path: ./tools/espressif-qemu/qemu/bin/qemu-system-xtensa
-    afl_path: /usr/local/bin/afl-fuzz
-    timeout: 3600
-    max_crashes: 100
-    # Bounded mutation fuzzing + optional QEMU esp32 smoke (see esp32_firmguard.validation.fuzzing)
-    qemu_machine: esp32
-    qemu_timeout_sec: 2.0
-    mutations_per_function: 4
-    max_functions_to_fuzz: 4
-    allow_mutation_only: true
-    fallback_oracle: esp_image
-    flash_load_address: "0x40000000"
-    esp_flash_pad: true
-  hardware:
-    enabled: true
-    ina219_address: 64
-    oscilloscope_enabled: false
-    power_trace_samples: 10000
-    cnn_model_path: ./models/power_cnn.h5
-metrics:
-  compute_vcr: true
-  compute_sri: true
-  sri_weights:
-    precision: 0.25
-    recall: 0.25
-    f1: 0.3
-    vcr: 0.2
+  n_estimators: 1000
+  max_depth: 15
+  learning_rate: 0.005
