@@ -113,7 +113,7 @@ Edit `configs/config.yaml`: `labeling.excel_path`, model threshold, Ollama setti
 
 ## Scripts
 
-See [scripts/README.md](scripts/README.md) for corpus download and demo shell wrappers.
+See [scripts/README.md](scripts/README.md) for helper scripts.
 
 ## License
 
